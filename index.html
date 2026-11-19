@@ -159,9 +159,18 @@
   const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const VIEWS = ["day", "week", "month", "news"];
   let data = null, view = "day", monthOffset = 0;
+  // settings live in localStorage; a cookie copy covers phones that block page storage for installed apps
   const store = {
-    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+    get(k) {
+      let v = null;
+      try { v = localStorage.getItem(k); } catch (e) {}
+      if (v === null && k !== "cache") { const m = document.cookie.match(new RegExp("(?:^|; )d_" + k + "=([^;]*)")); if (m) v = decodeURIComponent(m[1]); }
+      return v;
+    },
+    set(k, v) {
+      try { localStorage.setItem(k, v); } catch (e) {}
+      if (k !== "cache" && k !== "notified") { try { document.cookie = "d_" + k + "=" + encodeURIComponent(v) + "; max-age=31536000; path=/; SameSite=Lax"; } catch (e) {} }
+    },
   };
 
   function fmt(n, cur) {
@@ -300,13 +309,15 @@
   }
 
   // ---- alerts: a phone notification 15 minutes before each event and at the release, while this app is open
-  function alertsOn() { return store.get("alerts") === "1" && "Notification" in window && Notification.permission === "granted"; }
+  function alertsWanted() { return store.get("alerts") === "1"; }
+  function alertsOn() { return alertsWanted() && "Notification" in window && Notification.permission === "granted"; }
   function paintAlerts() {
     const b = $("alerts-btn");
-    const on = alertsOn();
-    b.textContent = on ? "Alerts on" : "Alerts off";
-    b.className = on ? "on" : ""; b.setAttribute("aria-pressed", on ? "true" : "false");
-    $("news-note").textContent = on ? "Red ones in the filter: 15 min before and at release, while open." : "Red high, orange medium, yellow low.";
+    const want = alertsWanted(), on = alertsOn();
+    b.textContent = want ? "Alerts on" : "Alerts off";
+    b.className = want ? "on" : ""; b.setAttribute("aria-pressed", want ? "true" : "false");
+    $("news-note").textContent = on ? "Red ones in the filter: 15 min before and at release, while open."
+      : want ? "Alerts are on but this app has no notification permission yet: tap Alerts to allow." : "Red high, orange medium, yellow low.";
   }
   async function notify(title, body, tag) {
     try {
@@ -337,8 +348,13 @@
     if (alertsOn()) { store.set("alerts", "0"); paintAlerts(); return; }
     if (!("Notification" in window)) { $("news-note").textContent = "This browser cannot show notifications."; return; }
     const p = await Notification.requestPermission();
-    if (p === "granted") { store.set("alerts", "1"); notify("News alerts on", "You will hear 15 minutes before each high-impact release while the app is open.", "test"); }
-    else $("news-note").textContent = "Notifications are blocked for this app in the phone's settings.";
+    if (p === "granted") {
+      if (!alertsWanted()) notify("News alerts on", "You will hear 15 minutes before each high-impact release while the app is open.", "test");
+      store.set("alerts", "1");
+    } else {
+      store.set("alerts", "0");
+      $("news-note").textContent = "Notifications are blocked for this app: allow them in the phone's app settings, then tap Alerts again.";
+    }
     paintAlerts();
   });
   setInterval(() => { if (!data) return; renderNext(); if (view === "news") renderNews(); checkAlerts(); }, 30000);
@@ -400,6 +416,13 @@
   window.addEventListener("appinstalled", () => { $("install").hidden = true; });
 
   paintAlerts();
+  document.addEventListener("pointerdown", async function ask() {
+    if (alertsWanted() && !alertsOn() && "Notification" in window && Notification.permission === "default") {
+      document.removeEventListener("pointerdown", ask);
+      await Notification.requestPermission().catch(() => {});
+      paintAlerts();
+    }
+  });
   for (const b of document.querySelectorAll("#chips .chip")) {
     b.addEventListener("click", () => { filter[b.dataset.f] = !filter[b.dataset.f]; store.set("filter", JSON.stringify(filter)); paintChips(); render(); });
   }
