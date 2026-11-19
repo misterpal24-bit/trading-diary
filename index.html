@@ -66,6 +66,27 @@
   .btn.primary { background: var(--accent); color: #141414; border-color: var(--accent); }
   .status { color: var(--muted); font-size: 12px; padding: 8px 0 16px; display: flex; justify-content: space-between; gap: 8px; }
   .status button { background: none; border: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; padding: 0; }
+  .next { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; margin: 0 0 10px; font-size: 13px; min-width: 0; }
+  .next .when { color: var(--accent); font-weight: 700; white-space: nowrap; }
+  .next.soon { border-color: var(--accent); }
+  .next.now { border-color: var(--loss); } .next.now .when { color: var(--loss); }
+  .next .what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list { display: flex; flex-direction: column; gap: 4px; padding-bottom: 20px; }
+  .list h2 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 10px 0 2px; text-transform: uppercase; letter-spacing: .04em; }
+  .ev { display: grid; grid-template-columns: 40px 38px 1fr auto; gap: 8px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; min-width: 0; }
+  .ev .tm { font-weight: 700; font-size: 13px; }
+  .ev .cc { font-size: 11px; font-weight: 700; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; text-align: center; padding: 1px 0; }
+  .ev .cc.usd { color: var(--accent); border-color: var(--accent); }
+  .ev .cc.med { border-style: dashed; opacity: .75; }
+  .ev .ti { min-width: 0; display: flex; flex-direction: column; }
+  .ev .ti .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev .ti .fp { font-size: 11px; color: var(--muted); }
+  .ev .in { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .ev.soon { border-color: var(--accent); } .ev.soon .in { color: var(--accent); font-weight: 700; }
+  .ev.done { opacity: .55; }
+  .tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); padding: 2px 0 6px; }
+  .tools button { background: var(--card); border: 1px solid var(--line); color: var(--fg); border-radius: 8px; padding: 5px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .tools button.on { background: var(--accent); color: #141414; border-color: var(--accent); }
   @media (prefers-reduced-motion: no-preference) { .card { transition: transform .12s ease; } .card:active { transform: scale(.97); } }
 </style>
 </head>
@@ -93,17 +114,24 @@
   <span class="l" id="total-label">loading…</span>
 </div>
 
+<div class="next" id="next-news" hidden><span class="when" id="next-when"></span><span class="what" id="next-what"></span></div>
 <nav role="tablist">
   <button role="tab" id="tab-day" aria-selected="true">Daily</button>
   <button role="tab" id="tab-week" aria-selected="false">Weekly</button>
   <button role="tab" id="tab-month" aria-selected="false">Monthly</button>
+  <button role="tab" id="tab-news" aria-selected="false">News</button>
 </nav>
+<div class="tools" id="news-tools" hidden>
+  <span id="news-note">Solid USD = high impact; dashed = medium.</span>
+  <button id="alerts-btn" aria-pressed="false">Alerts off</button>
+</div>
 
 <div class="months" id="months">
   <button id="prev" aria-label="earlier month">‹ earlier</button>
   <button id="next" aria-label="later month">later ›</button>
 </div>
 <div class="grid" id="grid"></div>
+<div class="list" id="list" hidden></div>
 
 <div class="status">
   <span id="status">Not loaded yet.</span>
@@ -115,6 +143,7 @@
   const $ = (id) => document.getElementById(id);
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const VIEWS = ["day", "week", "month", "news"];
   let data = null, view = "day", monthOffset = 0;
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -168,7 +197,11 @@
   function render() {
     const grid = $("grid");
     grid.innerHTML = "";
+    $("list").hidden = view !== "news"; grid.hidden = view === "news"; $("news-tools").hidden = view !== "news";
+    $("months").hidden = view !== "day";
     if (!data) { $("total").textContent = "—"; $("total-label").textContent = "nothing loaded yet"; return; }
+    renderNext();
+    if (view === "news") { renderNews(); return; }
     const cur = data.currency || "";
     const items = periods(view);
     grid.className = "grid" + (view === "day" ? "" : " wide");
@@ -188,10 +221,104 @@
     t.textContent = fmt(total, cur);
     t.className = "n " + (Math.abs(total) < 0.005 ? "" : total > 0 ? "win" : "loss");
     $("total-label").textContent = (view === "day" ? items.title : { week: "last 12 weeks", month: "last 12 months" }[view]) + ` · ${trades} trades`;
-    $("months").hidden = view !== "day";
     $("next").disabled = monthOffset === 0;
     $("account").textContent = data.account ? `account ${data.account}` : "";
   }
+
+  // ---- news: the PC puts the coming high-impact events into the gist; times are UTC seconds, shown in the phone's zone
+  const LEAD = 15 * 60;  // seconds before a release for the alert
+  function events() { return (data && Array.isArray(data.news) ? data.news : []).slice().sort((a, b) => a.time - b.time); }
+  function hm(t) { return new Date(t * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }); }
+  function dayName(t) { const d = new Date(t * 1000); return `${DOW[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`; }
+  function countdown(t) {
+    const s = t - Date.now() / 1000;
+    if (s <= 0) return s > -1800 ? "now" : "done";
+    const m = Math.round(s / 60);
+    if (m < 60) return `in ${m} min`;
+    if (m < 48 * 60) return `in ${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} m`;
+    return `in ${Math.round(m / 1440)} days`;
+  }
+  function renderNext() {
+    const box = $("next-news");
+    const next = events().find((e) => e.time > Date.now() / 1000 - 1800);
+    if (!next || view === "news") { box.hidden = true; return; }
+    const s = next.time - Date.now() / 1000;
+    box.hidden = false;
+    box.className = "next" + (s <= 0 ? " now" : s <= 3600 ? " soon" : "");
+    $("next-when").textContent = countdown(next.time);
+    $("next-what").textContent = `${next.country} ${next.title} · ${s < 86400 && s > 0 ? hm(next.time) : dayName(next.time) + " " + hm(next.time)}`;
+  }
+  function renderNews() {
+    const list = $("list");
+    list.innerHTML = "";
+    const evs = events();
+    const now = Date.now() / 1000;
+    const next = evs.find((e) => e.time > now - 1800);
+    $("total").textContent = next ? countdown(next.time) : "—";
+    $("total").className = "n";
+    $("total-label").textContent = next ? `${next.country} ${next.title}` : "no high-impact news in the coming days";
+    let day = "";
+    for (const e of evs) {
+      const d = dayName(e.time);
+      if (d !== day) { day = d; const h = document.createElement("h2"); h.textContent = d; list.appendChild(h); }
+      const row = document.createElement("div");
+      const s = e.time - now;
+      row.className = "ev" + (s < -1800 ? " done" : s <= 3600 ? " soon" : "");
+      row.innerHTML = `<span class="tm"></span><span class="cc"></span><span class="ti"><span class="t"></span><span class="fp"></span></span><span class="in"></span>`;
+      row.querySelector(".tm").textContent = hm(e.time);
+      const cc = row.querySelector(".cc"); cc.textContent = e.country; if (e.country === "USD") cc.classList.add("usd"); if (e.impact !== "High") cc.classList.add("med");
+      row.querySelector(".t").textContent = e.title;
+      row.querySelector(".fp").textContent = [e.forecast && `forecast ${e.forecast}`, e.previous && `prev ${e.previous}`].filter(Boolean).join(" · ");
+      row.querySelector(".in").textContent = countdown(e.time);
+      list.appendChild(row);
+    }
+    if (!evs.length) { const h = document.createElement("h2"); h.textContent = "nothing scheduled, or the PC has not sent the calendar yet"; list.appendChild(h); }
+  }
+
+  // ---- alerts: a phone notification 15 minutes before each event and at the release, while this app is open
+  function alertsOn() { return store.get("alerts") === "1" && "Notification" in window && Notification.permission === "granted"; }
+  function paintAlerts() {
+    const b = $("alerts-btn");
+    const on = alertsOn();
+    b.textContent = on ? "Alerts on" : "Alerts off";
+    b.className = on ? "on" : ""; b.setAttribute("aria-pressed", on ? "true" : "false");
+    $("news-note").textContent = on ? "Red ones: 15 min before and at release, while the app is open." : "Solid USD = high impact; dashed = medium.";
+  }
+  async function notify(title, body, tag) {
+    try {
+      const reg = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : null;
+      if (reg && reg.showNotification) await reg.showNotification(title, { body, tag, icon: "icon-192.png", badge: "icon-192.png", vibrate: [200, 100, 200] });
+      else new Notification(title, { body, tag, icon: "icon-192.png" });
+    } catch (e) {}
+  }
+  function checkAlerts() {
+    if (!alertsOn()) return;
+    const now = Date.now() / 1000;
+    let sent = {};
+    try { sent = JSON.parse(store.get("notified") || "{}"); } catch (e) {}
+    for (const e of events()) {
+      if (e.impact !== "High") continue;  // the medium releases are listed, not announced
+      for (const [lead, word] of [[LEAD, "in 15 min"], [0, "now"]]) {
+        const at = e.time - lead, key = `${e.time}|${e.title}|${lead}`;
+        if (now >= at && now < at + 180 && !sent[key]) {
+          sent[key] = now;
+          notify(`${e.country} news ${word}`, `${e.title} at ${hm(e.time)}` + (e.forecast ? ` · forecast ${e.forecast}` : ""), key);
+        }
+      }
+    }
+    for (const k in sent) if (now - sent[k] > 7 * 86400) delete sent[k];
+    store.set("notified", JSON.stringify(sent));
+  }
+  $("alerts-btn").addEventListener("click", async () => {
+    if (alertsOn()) { store.set("alerts", "0"); paintAlerts(); return; }
+    if (!("Notification" in window)) { $("news-note").textContent = "This browser cannot show notifications."; return; }
+    const p = await Notification.requestPermission();
+    if (p === "granted") { store.set("alerts", "1"); notify("News alerts on", "You will hear 15 minutes before each high-impact release while the app is open.", "test"); }
+    else $("news-note").textContent = "Notifications are blocked for this app in the phone's settings.";
+    paintAlerts();
+  });
+  setInterval(() => { if (!data) return; renderNext(); if (view === "news") renderNews(); checkAlerts(); }, 30000);
+  setInterval(() => { if (!document.hidden) load(); }, 10 * 60000);  // the PC updates the gist every five minutes
 
   async function load() {
     const id = store.get("gist");
@@ -207,6 +334,7 @@
       data = JSON.parse(f.content);
       store.set("cache", JSON.stringify(data));
       $("status").textContent = `Updated ${new Date(data.updated).toLocaleString()}`;
+      checkAlerts();
     } catch (e) {
       const cached = store.get("cache");
       if (cached && !data) data = JSON.parse(cached);
@@ -215,10 +343,10 @@
     render();
   }
 
-  for (const k of ["day", "week", "month"]) {
+  for (const k of VIEWS) {
     $(`tab-${k}`).addEventListener("click", () => {
       view = k; store.set("view", k);
-      for (const j of ["day", "week", "month"]) $(`tab-${j}`).setAttribute("aria-selected", j === k ? "true" : "false");
+      for (const j of VIEWS) $(`tab-${j}`).setAttribute("aria-selected", j === k ? "true" : "false");
       render();
     });
   }
@@ -247,8 +375,9 @@
   });
   window.addEventListener("appinstalled", () => { $("install").hidden = true; });
 
+  paintAlerts();
   const savedView = store.get("view");
-  if (savedView && ["day", "week", "month"].includes(savedView)) $(`tab-${savedView}`).click();
+  if (savedView && VIEWS.includes(savedView)) $(`tab-${savedView}`).click();
   load();
 })();
 </script>
