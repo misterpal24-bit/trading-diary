@@ -7,7 +7,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Trading Diary</title>
-<link rel="manifest" href='data:application/manifest+json,{"name":"Trading Diary","short_name":"Diary","display":"standalone","background_color":"%23111418","theme_color":"%23111418","start_url":"./"}'>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
   /* dark first: a diary read on a phone, often at night */
   :root {
@@ -55,6 +57,7 @@
   .months { display: flex; justify-content: space-between; padding: 0 0 8px; }
   .months button { background: none; border: none; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; padding: 2px 0; }
   .months button:disabled { color: var(--line); cursor: default; }
+  .install { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 6px 0 10px; font-size: 13px; }
   .setup { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
   .setup label { font-size: 13px; color: var(--muted); }
   .setup input { font: inherit; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 0; width: 100%; box-sizing: border-box; }
@@ -79,6 +82,11 @@
     <button class="btn primary" id="save">Save</button>
   </div>
 </section>
+
+<div class="install" id="install" hidden>
+  <span>Install the diary as an app on this phone.</span>
+  <button class="btn primary" id="install-btn">Install</button>
+</div>
 
 <div class="total">
   <span class="n" id="total">—</span>
@@ -226,6 +234,18 @@
   $("refresh").addEventListener("click", load);
   $("change").addEventListener("click", () => { $("setup").hidden = false; $("gist").value = store.get("gist") || ""; $("gist").focus(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+
+  // installable app: the browser offers it once the worker and manifest are in place; we surface the prompt as a button
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  let installEvent = null;
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvent = e; $("install").hidden = false; });
+  $("install-btn").addEventListener("click", async () => {
+    if (!installEvent) return;
+    installEvent.prompt();
+    await installEvent.userChoice.catch(() => {});
+    installEvent = null; $("install").hidden = true;
+  });
+  window.addEventListener("appinstalled", () => { $("install").hidden = true; });
 
   const savedView = store.get("view");
   if (savedView && ["day", "week", "month"].includes(savedView)) $(`tab-${savedView}`).click();
