@@ -89,6 +89,9 @@
   .ev .ti { min-width: 0; display: flex; flex-direction: column; }
   .ev .ti .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ev .ti .fp { font-size: 11px; color: var(--muted); }
+  .ev .ti .fp b { color: var(--fg); font-weight: 700; }
+  .ev .ti .vd { font-size: 11px; font-weight: 700; }
+  .ev .ti .vd.gold-down { color: #e5484d; } .ev .ti .vd.gold-up { color: #2ea043; } .ev .ti .vd.flat { color: var(--muted); }
   .ev .in { font-size: 11px; color: var(--muted); white-space: nowrap; }
   .ev.soon { border-color: var(--accent); } .ev.soon .in { color: var(--accent); font-weight: 700; }
   .ev.done { opacity: .55; }
@@ -256,6 +259,13 @@
   function paintChips() {
     for (const b of document.querySelectorAll("#chips .chip")) b.setAttribute("aria-pressed", filter[b.dataset.f] ? "true" : "false");
   }
+  function verdict(e) {
+    if (!e.actual) return null;
+    if (!e.effect) return { cls: "flat", text: "as expected" };
+    const usdUp = e.country === "USD" ? e.effect === "up" : e.effect === "down";
+    const who = `${e.country} ${e.effect === "up" ? "stronger" : "weaker"}`;
+    return usdUp ? { cls: "gold-down", text: `${who} → gold tends down` } : { cls: "gold-up", text: `${who} → gold tends up` };
+  }
   function events() {
     return (data && Array.isArray(data.news) ? data.news : [])
       .filter((e) => filter[e.impact] && (!filter.USD || e.country === "USD"))
@@ -301,7 +311,11 @@
       row.querySelector(".tm").textContent = hm(e.time);
       const cc = row.querySelector(".cc"); cc.textContent = e.country; if (e.country === "USD") cc.classList.add("usd");
       row.querySelector(".t").textContent = e.title;
-      row.querySelector(".fp").textContent = [e.forecast && `forecast ${e.forecast}`, e.previous && `prev ${e.previous}`].filter(Boolean).join(" · ");
+      const fp = row.querySelector(".fp");
+      fp.textContent = [e.forecast && `forecast ${e.forecast}`, e.previous && `prev ${e.previous}`].filter(Boolean).join(" · ");
+      if (e.actual) { const b = document.createElement("b"); b.textContent = `actual ${e.actual}`; fp.prepend(b, fp.textContent ? " · " : ""); }
+      const v = verdict(e);
+      if (v) { const vd = document.createElement("span"); vd.className = "vd " + v.cls; vd.textContent = v.text; row.querySelector(".ti").appendChild(vd); }
       row.querySelector(".in").textContent = countdown(e.time);
       list.appendChild(row);
     }
@@ -316,7 +330,7 @@
     const want = alertsWanted(), on = alertsOn();
     b.textContent = want ? "Alerts on" : "Alerts off";
     b.className = want ? "on" : ""; b.setAttribute("aria-pressed", want ? "true" : "false");
-    $("news-note").textContent = on ? "Red ones in the filter: 15 min before and at release, while open."
+    $("news-note").textContent = on ? "Red ones in the filter: 15 min before, at release and when the number lands, while open."
       : want ? "Alerts are on but this app has no notification permission yet: tap Alerts to allow." : "Red high, orange medium, yellow low.";
   }
   async function notify(title, body, tag) {
@@ -340,6 +354,11 @@
           notify(`${e.country} news ${word}`, `${e.title} at ${hm(e.time)}` + (e.forecast ? ` · forecast ${e.forecast}` : ""), key);
         }
       }
+      const key = `${e.time}|${e.title}|actual`, v = verdict(e);
+      if (e.actual && v && now - e.time < 2 * 3600 && !sent[key]) {
+        sent[key] = now;
+        notify(`${e.country} ${e.title}: ${e.actual}`, (e.forecast ? `forecast ${e.forecast} · ` : "") + v.text, key);
+      }
     }
     for (const k in sent) if (now - sent[k] > 7 * 86400) delete sent[k];
     store.set("notified", JSON.stringify(sent));
@@ -358,9 +377,15 @@
     paintAlerts();
   });
   setInterval(() => { if (!data) return; renderNext(); if (view === "news") renderNews(); checkAlerts(); }, 30000);
-  setInterval(() => { if (!document.hidden) load(); }, 10 * 60000);  // the PC updates the gist every five minutes
+  let lastLoad = 0;
+  function justReleased() { const now = Date.now() / 1000; return events().some((e) => e.impact !== "Low" && now - e.time >= 0 && now - e.time < 1800 && !e.actual); }
+  setInterval(() => {  // the PC updates the gist every five minutes; sooner after a release, until the actual arrives
+    if (document.hidden || !data) return;
+    if (Date.now() - lastLoad >= (justReleased() ? 2 : 10) * 60000) load();
+  }, 30000);
 
   async function load() {
+    lastLoad = Date.now();
     const id = store.get("gist");
     if (!id) { $("setup").hidden = false; $("status").textContent = "Waiting for the gist id."; render(); return; }
     $("setup").hidden = true;
