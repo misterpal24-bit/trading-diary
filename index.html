@@ -52,6 +52,9 @@
   .card.win .n { color: var(--win); } .card.loss .n { color: var(--loss); }
   .card .t { font-size: 9px; color: var(--muted); }
   .card.today { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .months { display: flex; justify-content: space-between; padding: 0 0 8px; }
+  .months button { background: none; border: none; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; padding: 2px 0; }
+  .months button:disabled { color: var(--line); cursor: default; }
   .setup { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
   .setup label { font-size: 13px; color: var(--muted); }
   .setup input { font: inherit; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 0; width: 100%; box-sizing: border-box; }
@@ -88,6 +91,10 @@
   <button role="tab" id="tab-month" aria-selected="false">Monthly</button>
 </nav>
 
+<div class="months" id="months">
+  <button id="prev" aria-label="earlier month">‹ earlier</button>
+  <button id="next" aria-label="later month">later ›</button>
+</div>
 <div class="grid" id="grid"></div>
 
 <div class="status">
@@ -100,7 +107,7 @@
   const $ = (id) => document.getElementById(id);
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  let data = null, view = "day";
+  let data = null, view = "day", monthOffset = 0;
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
@@ -121,10 +128,15 @@
     const now = today(tz);
     const out = [];
     if (kind === "day") {
-      for (let i = 0; i < 30; i++) {
-        const d = addDays(now, -i), key = ymd(d), row = byDay[key];
-        out.push({ key, label: `${DOW[d.getUTCDay()].slice(0, 2)} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`, net: row ? row.net : null, trades: row ? row.trades : 0, isNow: i === 0 });
+      // the days of one month, newest first: the current month up to today, or a whole earlier month
+      const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + monthOffset, 1));
+      const thisMonth = monthOffset === 0;
+      const last = thisMonth ? now : new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0));
+      for (let d = new Date(last); d >= first; d = addDays(d, -1)) {
+        const key = ymd(d), row = byDay[key];
+        out.push({ key, label: `${DOW[d.getUTCDay()].slice(0, 2)} ${d.getUTCDate()}`, net: row ? row.net : null, trades: row ? row.trades : 0, isNow: thisMonth && key === ymd(now) });
       }
+      out.title = `${MONTHS[first.getUTCMonth()]} ${first.getUTCFullYear()}`;
     } else if (kind === "week") {
       const monday = addDays(now, -((now.getUTCDay() + 6) % 7));
       for (let i = 0; i < 12; i++) {
@@ -167,7 +179,9 @@
     const t = $("total");
     t.textContent = fmt(total, cur);
     t.className = "n " + (Math.abs(total) < 0.005 ? "" : total > 0 ? "win" : "loss");
-    $("total-label").textContent = { day: "last 30 days", week: "last 12 weeks", month: "last 12 months" }[view] + ` · ${trades} trades`;
+    $("total-label").textContent = (view === "day" ? items.title : { week: "last 12 weeks", month: "last 12 months" }[view]) + ` · ${trades} trades`;
+    $("months").hidden = view !== "day";
+    $("next").disabled = monthOffset === 0;
     $("account").textContent = data.account ? `account ${data.account}` : "";
   }
 
@@ -207,6 +221,8 @@
     load();
   });
   $("gist").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
+  $("prev").addEventListener("click", () => { monthOffset -= 1; render(); });
+  $("next").addEventListener("click", () => { if (monthOffset < 0) { monthOffset += 1; render(); } });
   $("refresh").addEventListener("click", load);
   $("change").addEventListener("click", () => { $("setup").hidden = false; $("gist").value = store.get("gist") || ""; $("gist").focus(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
