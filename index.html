@@ -76,8 +76,16 @@
   .ev { display: grid; grid-template-columns: 40px 38px 1fr auto; gap: 8px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; min-width: 0; }
   .ev .tm { font-weight: 700; font-size: 13px; }
   .ev .cc { font-size: 11px; font-weight: 700; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; text-align: center; padding: 1px 0; }
+  .ev { border-left: 4px solid var(--line); }
+  .ev.high { border-left-color: #e5484d; } .ev.medium { border-left-color: #f0883e; } .ev.low { border-left-color: #e3c34a; }
   .ev .cc.usd { color: var(--accent); border-color: var(--accent); }
-  .ev .cc.med { border-style: dashed; opacity: .75; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 0 8px; }
+  .chip { font: inherit; font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--muted); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--line); display: inline-block; }
+  .chip.high i { background: #e5484d; } .chip.medium i { background: #f0883e; } .chip.low i { background: #e3c34a; }
+  .chip[aria-pressed="true"] { color: var(--fg); border-color: var(--muted); background: var(--flat); }
+  .chip[aria-pressed="false"] { opacity: .55; }
+  .chip[aria-pressed="false"] i { background: var(--line); }
   .ev .ti { min-width: 0; display: flex; flex-direction: column; }
   .ev .ti .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ev .ti .fp { font-size: 11px; color: var(--muted); }
@@ -122,8 +130,14 @@
   <button role="tab" id="tab-news" aria-selected="false">News</button>
 </nav>
 <div class="tools" id="news-tools" hidden>
-  <span id="news-note">Solid USD = high impact; dashed = medium.</span>
+  <span id="news-note">Red high, orange medium, yellow low.</span>
   <button id="alerts-btn" aria-pressed="false">Alerts off</button>
+</div>
+<div class="chips" id="chips" hidden>
+  <button class="chip high" data-f="High" aria-pressed="true"><i></i>High</button>
+  <button class="chip medium" data-f="Medium" aria-pressed="true"><i></i>Medium</button>
+  <button class="chip low" data-f="Low" aria-pressed="false"><i></i>Low</button>
+  <button class="chip" data-f="USD" aria-pressed="false"><i></i>USD only</button>
 </div>
 
 <div class="months" id="months">
@@ -197,7 +211,7 @@
   function render() {
     const grid = $("grid");
     grid.innerHTML = "";
-    $("list").hidden = view !== "news"; grid.hidden = view === "news"; $("news-tools").hidden = view !== "news";
+    $("list").hidden = view !== "news"; grid.hidden = view === "news"; $("news-tools").hidden = view !== "news"; $("chips").hidden = view !== "news";
     $("months").hidden = view !== "day";
     if (!data) { $("total").textContent = "—"; $("total-label").textContent = "nothing loaded yet"; return; }
     renderNext();
@@ -227,7 +241,17 @@
 
   // ---- news: the PC puts the coming high-impact events into the gist; times are UTC seconds, shown in the phone's zone
   const LEAD = 15 * 60;  // seconds before a release for the alert
-  function events() { return (data && Array.isArray(data.news) ? data.news : []).slice().sort((a, b) => a.time - b.time); }
+  const FILTER_DEFAULT = { High: true, Medium: true, Low: false, USD: false };
+  let filter = FILTER_DEFAULT;
+  try { filter = Object.assign({}, FILTER_DEFAULT, JSON.parse(store.get("filter") || "{}")); } catch (e) {}
+  function paintChips() {
+    for (const b of document.querySelectorAll("#chips .chip")) b.setAttribute("aria-pressed", filter[b.dataset.f] ? "true" : "false");
+  }
+  function events() {
+    return (data && Array.isArray(data.news) ? data.news : [])
+      .filter((e) => filter[e.impact] && (!filter.USD || e.country === "USD"))
+      .slice().sort((a, b) => a.time - b.time);
+  }
   function hm(t) { return new Date(t * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }); }
   function dayName(t) { const d = new Date(t * 1000); return `${DOW[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`; }
   function countdown(t) {
@@ -263,16 +287,16 @@
       if (d !== day) { day = d; const h = document.createElement("h2"); h.textContent = d; list.appendChild(h); }
       const row = document.createElement("div");
       const s = e.time - now;
-      row.className = "ev" + (s < -1800 ? " done" : s <= 3600 ? " soon" : "");
+      row.className = "ev " + String(e.impact || "").toLowerCase() + (s < -1800 ? " done" : s <= 3600 ? " soon" : "");
       row.innerHTML = `<span class="tm"></span><span class="cc"></span><span class="ti"><span class="t"></span><span class="fp"></span></span><span class="in"></span>`;
       row.querySelector(".tm").textContent = hm(e.time);
-      const cc = row.querySelector(".cc"); cc.textContent = e.country; if (e.country === "USD") cc.classList.add("usd"); if (e.impact !== "High") cc.classList.add("med");
+      const cc = row.querySelector(".cc"); cc.textContent = e.country; if (e.country === "USD") cc.classList.add("usd");
       row.querySelector(".t").textContent = e.title;
       row.querySelector(".fp").textContent = [e.forecast && `forecast ${e.forecast}`, e.previous && `prev ${e.previous}`].filter(Boolean).join(" · ");
       row.querySelector(".in").textContent = countdown(e.time);
       list.appendChild(row);
     }
-    if (!evs.length) { const h = document.createElement("h2"); h.textContent = "nothing scheduled, or the PC has not sent the calendar yet"; list.appendChild(h); }
+    if (!evs.length) { const h = document.createElement("h2"); h.textContent = (data.news || []).length ? "nothing matches the filter this week" : "nothing scheduled, or the PC has not sent the calendar yet"; list.appendChild(h); }
   }
 
   // ---- alerts: a phone notification 15 minutes before each event and at the release, while this app is open
@@ -282,7 +306,7 @@
     const on = alertsOn();
     b.textContent = on ? "Alerts on" : "Alerts off";
     b.className = on ? "on" : ""; b.setAttribute("aria-pressed", on ? "true" : "false");
-    $("news-note").textContent = on ? "Red ones: 15 min before and at release, while the app is open." : "Solid USD = high impact; dashed = medium.";
+    $("news-note").textContent = on ? "Red ones in the filter: 15 min before and at release, while open." : "Red high, orange medium, yellow low.";
   }
   async function notify(title, body, tag) {
     try {
@@ -376,6 +400,10 @@
   window.addEventListener("appinstalled", () => { $("install").hidden = true; });
 
   paintAlerts();
+  for (const b of document.querySelectorAll("#chips .chip")) {
+    b.addEventListener("click", () => { filter[b.dataset.f] = !filter[b.dataset.f]; store.set("filter", JSON.stringify(filter)); paintChips(); render(); });
+  }
+  paintChips();
   const savedView = store.get("view");
   if (savedView && VIEWS.includes(savedView)) $(`tab-${savedView}`).click();
   load();
