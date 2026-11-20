@@ -34,6 +34,10 @@
   .total .n { font-size: 28px; font-weight: 700; line-height: 1.1; }
   .total .n.win { color: var(--win); } .total .n.loss { color: var(--loss); }
   .total .l { color: var(--muted); font-size: 13px; }
+  html, body { overflow-x: hidden; }
+  #pane { touch-action: pan-y; will-change: transform, opacity; }
+  #pane.anim { transition: transform .22s ease-out, opacity .22s ease-out; }
+  @media (prefers-reduced-motion: reduce) { #pane.anim { transition: none; } }
   nav { display: flex; gap: 6px; border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 8px; }
   nav button {
     flex: 1; background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 10px;
@@ -132,6 +136,7 @@
   <button role="tab" id="tab-month" aria-selected="false">Monthly</button>
   <button role="tab" id="tab-news" aria-selected="false">News</button>
 </nav>
+<div id="pane">
 <div class="tools" id="news-tools" hidden>
   <span id="news-note">Red high, orange medium, yellow low.</span>
   <button id="alerts-btn" aria-pressed="false">Alerts off</button>
@@ -149,6 +154,7 @@
 </div>
 <div class="grid" id="grid"></div>
 <div class="list" id="list" hidden></div>
+</div>
 
 <div class="status">
   <span id="status">Not loaded yet.</span>
@@ -408,24 +414,70 @@
     render();
   }
 
+  const pane = $("pane");
+  function setView(k) {
+    view = k; store.set("view", k);
+    for (const j of VIEWS) $(`tab-${j}`).setAttribute("aria-selected", j === k ? "true" : "false");
+    render();
+  }
+  function place(x, op, animate) {
+    pane.classList.toggle("anim", !!animate);
+    pane.style.transform = x ? `translateX(${x}px)` : "";
+    pane.style.opacity = op;
+  }
+  let moving = false;
+  // slide the pane out towards `dir` (-1 left, +1 right), switch, slide the new tab in from the other side
+  function slideTo(k, dir, fromX) {
+    if (moving || k === view) return;
+    moving = true;
+    const w = window.innerWidth;
+    place(dir * w, 0, true);
+    const done = () => {
+      pane.removeEventListener("transitionend", done);
+      setView(k);
+      place(-dir * w * 0.35, 0, false);
+      pane.getBoundingClientRect();  // commit the start position before animating
+      requestAnimationFrame(() => { place(0, 1, true); setTimeout(() => { pane.classList.remove("anim"); moving = false; }, 260); });
+    };
+    pane.addEventListener("transitionend", done);
+    setTimeout(() => { if (moving && pane.style.opacity === "0") done(); }, 300);  // in case transitionend never fires
+  }
   for (const k of VIEWS) {
     $(`tab-${k}`).addEventListener("click", () => {
-      view = k; store.set("view", k);
-      for (const j of VIEWS) $(`tab-${j}`).setAttribute("aria-selected", j === k ? "true" : "false");
-      render();
+      const from = VIEWS.indexOf(view), to = VIEWS.indexOf(k);
+      if (from < 0 || from === to || !data) setView(k); else slideTo(k, to > from ? -1 : 1);
     });
   }
-  // swipe left for the next tab, right for the previous one (Daily > Weekly > Monthly > News)
+  // swipe: the pane follows the finger (stiffer past the first or last tab), then slides on or snaps back
   let swipe = null;
-  document.addEventListener("touchstart", (ev) => { const t = ev.touches[0]; swipe = { x: t.clientX, y: t.clientY, t: Date.now() }; }, { passive: true });
-  document.addEventListener("touchend", (ev) => {
-    if (!swipe) return;
-    const t = ev.changedTouches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y, dt = Date.now() - swipe.t;
-    swipe = null;
-    if (dt > 800 || Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy)) return;
-    const i = VIEWS.indexOf(view) + (dx < 0 ? 1 : -1);
-    if (i >= 0 && i < VIEWS.length) $(`tab-${VIEWS[i]}`).click();
+  pane.addEventListener("touchstart", (ev) => {
+    if (moving || ev.touches.length !== 1) return;
+    const t = ev.touches[0];
+    swipe = { x: t.clientX, y: t.clientY, t: Date.now(), drag: false };
   }, { passive: true });
+  pane.addEventListener("touchmove", (ev) => {
+    if (!swipe) return;
+    const t = ev.touches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+    if (!swipe.drag) {
+      if (Math.abs(dx) < 12 || Math.abs(dx) < 1.5 * Math.abs(dy)) { if (Math.abs(dy) > 12) swipe = null; return; }
+      swipe.drag = true;
+    }
+    const i = VIEWS.indexOf(view), edge = (dx < 0 && i === VIEWS.length - 1) || (dx > 0 && i === 0);
+    const x = edge ? dx * 0.3 : dx;
+    place(x, 1 - Math.min(Math.abs(x) / window.innerWidth, 0.6), false);
+  }, { passive: true });
+  function endSwipe(ev) {
+    if (!swipe) return;
+    const t = ev.changedTouches[0], dx = t.clientX - swipe.x, dt = Date.now() - swipe.t, drag = swipe.drag;
+    swipe = null;
+    if (!drag) return;
+    const far = Math.abs(dx) >= Math.min(90, window.innerWidth / 4), fast = Math.abs(dx) >= 40 && dt < 300;
+    const i = VIEWS.indexOf(view) + (dx < 0 ? 1 : -1);
+    if ((far || fast) && i >= 0 && i < VIEWS.length) slideTo(VIEWS[i], dx < 0 ? -1 : 1);
+    else { place(0, 1, true); setTimeout(() => pane.classList.remove("anim"), 260); }
+  }
+  pane.addEventListener("touchend", endSwipe, { passive: true });
+  pane.addEventListener("touchcancel", endSwipe, { passive: true });
   $("save").addEventListener("click", () => {
     const v = $("gist").value.trim().split("/").pop();
     if (!v) return;
