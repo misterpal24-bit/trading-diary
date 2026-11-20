@@ -44,6 +44,18 @@
     padding: 7px 0; font: inherit; font-weight: 600; cursor: pointer;
   }
   nav button[aria-selected="true"] { background: var(--accent); color: #141414; border-color: var(--accent); }
+  nav button { font-size: 14px; padding: 7px 0; min-width: 0; }
+  .chart-head { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 2px 0 8px; font-size: 12px; color: var(--muted); }
+  .chart-head .pill { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); font-weight: 700; color: var(--fg); }
+  .chart-head .pill.up { color: var(--win); border-color: var(--win); } .chart-head .pill.down { color: var(--loss); border-color: var(--loss); }
+  #chart { width: 100%; height: 320px; display: block; border-radius: 12px; background: var(--card); border: 1px solid var(--line); touch-action: pan-y; }
+  .levels { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; padding-bottom: 20px; }
+  .lv { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; font-size: 13px; border-left-width: 4px; }
+  .lv.resistance { border-left-color: var(--loss); } .lv.support { border-left-color: var(--win); } .lv.price { border-left-color: var(--accent); color: var(--accent); font-weight: 700; }
+  .lv .p { font-weight: 700; min-width: 64px; font-variant-numeric: tabular-nums; }
+  .lv .d { flex: 1; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lv .away { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .levels h2 { font-size: 12px; color: var(--muted); margin: 8px 0 2px; }
   nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; padding-bottom: 20px; }
   .grid.wide { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
@@ -135,6 +147,7 @@
   <button role="tab" id="tab-week" aria-selected="false">Weekly</button>
   <button role="tab" id="tab-month" aria-selected="false">Monthly</button>
   <button role="tab" id="tab-news" aria-selected="false">News</button>
+  <button role="tab" id="tab-chart" aria-selected="false">Chart</button>
 </nav>
 <div id="pane">
 <div class="tools" id="news-tools" hidden>
@@ -154,6 +167,11 @@
 </div>
 <div class="grid" id="grid"></div>
 <div class="list" id="list" hidden></div>
+<div id="chart-box" hidden>
+  <div class="chart-head" id="chart-head"></div>
+  <canvas id="chart"></canvas>
+  <div class="levels" id="levels"></div>
+</div>
 </div>
 
 <div class="status">
@@ -166,7 +184,7 @@
   const $ = (id) => document.getElementById(id);
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const VIEWS = ["day", "week", "month", "news"];
+  const VIEWS = ["day", "week", "month", "news", "chart"];
   let data = null, view = "day", monthOffset = 0;
   // settings live in localStorage; a cookie copy covers phones that block page storage for installed apps
   const store = {
@@ -229,11 +247,13 @@
   function render() {
     const grid = $("grid");
     grid.innerHTML = "";
-    $("list").hidden = view !== "news"; grid.hidden = view === "news"; $("news-tools").hidden = view !== "news"; $("chips").hidden = view !== "news";
+    $("list").hidden = view !== "news"; grid.hidden = view === "news" || view === "chart"; $("news-tools").hidden = view !== "news"; $("chips").hidden = view !== "news";
+    $("chart-box").hidden = view !== "chart";
     $("months").hidden = view !== "day";
     if (!data) { $("total").textContent = "—"; $("total-label").textContent = "nothing loaded yet"; return; }
     renderNext();
     if (view === "news") { renderNews(); return; }
+    if (view === "chart") { renderChart(); return; }
     const cur = data.currency || "";
     const items = periods(view);
     grid.className = "grid" + (view === "day" ? "" : " wide");
@@ -296,6 +316,108 @@
     box.className = "next" + (s <= 0 ? " now" : s <= 3600 ? " soon" : "");
     $("next-when").textContent = countdown(next.time);
     $("next-what").textContent = `${next.country} ${next.title} · ${s < 86400 && s > 0 ? hm(next.time) : dayName(next.time) + " " + hm(next.time)}`;
+  }
+  // ---- the chart: H1 candles with the EMA50, the levels worth watching and the current price
+  function renderChart() {
+    const c = data.chart, head = $("chart-head"), lv = $("levels"), cv = $("chart");
+    head.innerHTML = ""; lv.innerHTML = "";
+    if (!c || !c.bars || !c.bars.length) {
+      $("total").textContent = "—"; $("total").className = "n";
+      $("total-label").textContent = c && c.note ? c.note : "no chart yet: the PC sends it with the next update";
+      cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+      return;
+    }
+    $("total").textContent = c.price.toFixed(2); $("total").className = "n";
+    $("total-label").textContent = `${c.symbol} · H1, last ${c.bars.length} hours`;
+    const pill = (text, cls) => { const e = document.createElement("span"); e.className = "pill " + (cls || ""); e.textContent = text; head.appendChild(e); };
+    const t = c.trend || {};
+    const dir = (w) => w === "UP" ? "up" : w === "DOWN" ? "down" : "";
+    if (t.h1) pill(`H1 ${t.h1}`, dir(t.h1));
+    if (t.h4) pill(`H4 ${t.h4}`, dir(t.h4));
+    if (t.ema50) pill(`EMA50 ${t.ema50 === "UP" ? "above" : "below"}${t.ema50_value ? " " + t.ema50_value.toFixed(1) : ""}`, dir(t.ema50));
+    if (c.atr) { const e = document.createElement("span"); e.textContent = `ATR ${c.atr.toFixed(1)}`; head.appendChild(e); }
+    drawChart(cv, c);
+    const rows = c.levels.map((l) => ({ ...l })).concat([{ price: c.price, kind: "price", label: "price now", strength: 0 }]);
+    rows.sort((a, b) => b.price - a.price);
+    const above = document.createElement("h2"); above.textContent = "above · resistance"; lv.appendChild(above);
+    let belowShown = false;
+    for (const r of rows) {
+      if (r.kind === "price") {
+        const row = document.createElement("div"); row.className = "lv price";
+        row.innerHTML = `<span class="p"></span><span class="d">price now</span>`;
+        row.querySelector(".p").textContent = r.price.toFixed(2); lv.appendChild(row);
+        const below = document.createElement("h2"); below.textContent = "below · support"; lv.appendChild(below); belowShown = true;
+        continue;
+      }
+      const row = document.createElement("div"); row.className = "lv " + r.kind;
+      row.innerHTML = `<span class="p"></span><span class="d"></span><span class="away"></span>`;
+      row.querySelector(".p").textContent = r.price.toFixed(2);
+      row.querySelector(".d").textContent = r.label + (r.strength > 1 ? ` · ${r.strength} touches` : "");
+      const d = r.price - c.price;
+      row.querySelector(".away").textContent = (d >= 0 ? "+" : "−") + Math.abs(d).toFixed(1);
+      lv.appendChild(row);
+    }
+    if (!c.levels.length) { const h = document.createElement("h2"); h.textContent = "no levels within reach of these candles"; lv.appendChild(h); }
+  }
+  function drawChart(cv, c) {
+    const css = getComputedStyle(document.documentElement);
+    const col = (n) => css.getPropertyValue(n).trim();
+    const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 360, Hh = cv.clientHeight || 320;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(Hh * dpr);
+    const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, Hh);
+    const padL = 6, padR = 58, padT = 10, padB = 22, n = c.bars.length;
+    const iw = W - padL - padR, ih = Hh - padT - padB;
+    let lo = Math.min(...c.bars.map((b) => b[3]), c.price), hi = Math.max(...c.bars.map((b) => b[2]), c.price);
+    for (const l of c.levels) { lo = Math.min(lo, l.price); hi = Math.max(hi, l.price); }
+    const room = (hi - lo) * 0.06 || 1; lo -= room; hi += room;
+    const y = (p) => padT + (hi - p) / (hi - lo) * ih;
+    const x = (i) => padL + (i + 0.5) * iw / n;
+    const bw = Math.max(2, iw / n * 0.65);
+    // price grid
+    g.font = "10px system-ui, sans-serif"; g.textBaseline = "middle"; g.textAlign = "left";
+    const span = hi - lo, rawStep = span / 6, mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= rawStep) || rawStep;
+    for (let p = Math.ceil(lo / step) * step; p <= hi; p += step) {
+      g.strokeStyle = col("--line"); g.lineWidth = 1; g.beginPath(); g.moveTo(padL, y(p)); g.lineTo(W - padR, y(p)); g.stroke();
+      g.fillStyle = col("--muted"); g.fillText(p.toFixed(step < 1 ? 1 : 0), W - padR + 6, y(p));
+    }
+    // day ticks
+    g.textAlign = "center"; g.textBaseline = "top";
+    let lastDay = -1, lastLabelX = -1e9;
+    for (let i = 0; i < n; i++) {
+      const d = new Date(c.bars[i][0] * 1000);
+      if (d.getDate() !== lastDay) {
+        lastDay = d.getDate();
+        if (i > 0) { g.strokeStyle = col("--line"); g.beginPath(); g.moveTo(x(i) - bw, padT); g.lineTo(x(i) - bw, padT + ih); g.stroke(); }
+        const lx = Math.min(Math.max(x(i) + 14, padL + 16), W - padR - 16);
+        if (lx - lastLabelX >= 44) { g.fillStyle = col("--muted"); g.fillText(`${DOW[d.getDay()]} ${d.getDate()}`, lx, Hh - padB + 6); lastLabelX = lx; }
+      }
+    }
+    // levels
+    g.textAlign = "right"; g.textBaseline = "bottom"; g.font = "600 9px system-ui, sans-serif";
+    let lastLabelY = -1e9;
+    for (const l of c.levels) {  // sorted high to low; a label is skipped when it would sit on the previous one
+      g.strokeStyle = l.kind === "support" ? col("--win") : col("--loss"); g.lineWidth = 1; g.setLineDash([4, 3]);
+      g.beginPath(); g.moveTo(padL, y(l.price)); g.lineTo(W - padR, y(l.price)); g.stroke(); g.setLineDash([]);
+      if (y(l.price) - lastLabelY >= 10) { g.fillStyle = g.strokeStyle; g.fillText(l.label.replace(", watch the retest", ""), W - padR - 3, y(l.price) - 1); lastLabelY = y(l.price); }
+    }
+    // EMA50
+    g.strokeStyle = "#5b8def"; g.lineWidth = 1.5; g.beginPath();
+    c.ema.forEach((v, i) => { if (i === 0) g.moveTo(x(i), y(v)); else g.lineTo(x(i), y(v)); }); g.stroke();
+    // candles
+    for (let i = 0; i < n; i++) {
+      const [, o, h, l, cl] = c.bars[i], up = cl >= o, colr = up ? col("--win") : col("--loss");
+      g.strokeStyle = colr; g.fillStyle = colr; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(x(i), y(h)); g.lineTo(x(i), y(l)); g.stroke();
+      const top = y(Math.max(o, cl)), hgt = Math.max(1, Math.abs(y(o) - y(cl)));
+      g.fillRect(x(i) - bw / 2, top, bw, hgt);
+    }
+    // current price
+    g.strokeStyle = col("--accent"); g.lineWidth = 1; g.setLineDash([2, 3]);
+    g.beginPath(); g.moveTo(padL, y(c.price)); g.lineTo(W - padR, y(c.price)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = col("--accent"); g.fillRect(W - padR + 2, y(c.price) - 8, padR - 4, 16);
+    g.fillStyle = "#141414"; g.font = "700 10px system-ui, sans-serif"; g.textAlign = "left"; g.textBaseline = "middle";
+    g.fillText(c.price.toFixed(1), W - padR + 6, y(c.price));
   }
   function renderNews() {
     const list = $("list");
